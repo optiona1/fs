@@ -24,16 +24,17 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	}
 }
 
+type TCPTransportOpts struct {
+	ListenAddr    string
+	HandshakeFunc HandSharkFunc
+	Decoder       Decoder
+}
+
 // TCPTransport 管理 TCP 连接的传输层
 type TCPTransport struct {
-	// 监听的地址
-	listenAddress string
+	TCPTransportOpts
 	// 用于接受新的连接
 	listener net.Listener
-
-	sharkHands HandSharkFunc
-
-	decoder Decoder
 
 	// 读写锁，用于接受新的连接
 	mu sync.RWMutex
@@ -42,10 +43,9 @@ type TCPTransport struct {
 }
 
 // NewTCPTransport创建并返回一个新的 TCPTransport 实例，并设置监听地址。
-func NewTCPTransport(listenAddr string) *TCPTransport {
+func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
-		sharkHands:    NOPHandsharkFunc,
-		listenAddress: listenAddr,
+		TCPTransportOpts: opts,
 	}
 }
 
@@ -53,7 +53,7 @@ func (t *TCPTransport) ListenAddAccept() error {
 	var err error
 
 	// 在指定地址上监听新的 TCP 连接
-	t.listener, err = net.Listen("tcp", t.listenAddress)
+	t.listener, err = net.Listen("tcp", t.ListenAddr)
 	if err != nil {
 		return err
 	}
@@ -84,16 +84,19 @@ type Temp struct{}
 func (t *TCPTransport) handleConn(conn net.Conn) {
 	peer := NewTCPPeer(conn, true)
 
-	if err := t.sharkHands(peer); err != nil {
-		fmt.Println("")
+	if err := t.HandshakeFunc(peer); err != nil {
+		conn.Close()
+		fmt.Printf("TCP handshake error: %s", err)
+		return
 	}
 
-	msg := &Temp{}
+	rpc := &RPC{}
 	for {
-		if err := t.decoder.Decode(conn, msg); err != nil {
+		if err := t.Decoder.Decode(conn, rpc); err != nil {
 			fmt.Printf("TCP error: %s", err)
 			continue
 		}
+		rpc.From = conn.RemoteAddr()
+		fmt.Printf("message %+v\n", rpc)
 	}
-	fmt.Printf("new incomming connection %+v\n", peer)
 }
