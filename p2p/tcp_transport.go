@@ -3,7 +3,6 @@ package p2p
 import (
 	"fmt"
 	"net"
-	"sync"
 )
 
 // TCPPeer represents the remote node over a TCP established connection.
@@ -24,10 +23,16 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	}
 }
 
+// Close implements the Peer interface.
+func (p *TCPPeer) Close() error {
+	return p.conn.Close()
+}
+
 type TCPTransportOpts struct {
 	ListenAddr    string
 	HandshakeFunc HandSharkFunc
 	Decoder       Decoder
+	OnPeer        func(Peer) error
 }
 
 // TCPTransport 管理 TCP 连接的传输层
@@ -35,18 +40,21 @@ type TCPTransport struct {
 	TCPTransportOpts
 	// 用于接受新的连接
 	listener net.Listener
-
-	// 读写锁，用于接受新的连接
-	mu sync.RWMutex
-	// 一个存储已连接 p2p 节点的映射，key 是节点地址，值是 Peer 接口
-	peers map[net.Addr]Peer
+	rpcch    chan RPC
 }
 
 // NewTCPTransport创建并返回一个新的 TCPTransport 实例，并设置监听地址。
 func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
 		TCPTransportOpts: opts,
+		rpcch:            make(chan RPC),
 	}
+}
+
+// Consume implements the Transport interface, which whill return read-only channel
+// for reading the incoming messages received from another peer in the network.
+func (t *TCPTransport) Consume() <-chan RPC {
+	return t.rpcch
 }
 
 func (t *TCPTransport) ListenAddAccept() error {
@@ -78,25 +86,33 @@ func (t *TCPTransport) startAcceptLoop() {
 
 }
 
-type Temp struct{}
-
 // 处理新连接。
 func (t *TCPTransport) handleConn(conn net.Conn) {
+	var err error
+
+	defer func() {
+		fmt.Printf("Dropping peer connection: %s", err)
+		conn.Close()
+	}()
+
 	peer := NewTCPPeer(conn, true)
 
-	if err := t.HandshakeFunc(peer); err != nil {
-		conn.Close()
-		fmt.Printf("TCP handshake error: %s", err)
+	if err = t.HandshakeFunc(peer); err != nil {
 		return
 	}
 
-	rpc := &RPC{}
+	if t.OnPeer != nil {
+		if err = t.OnPeer(peer); err != nil {
+			return
+		}
+	}
+
+	rpc := RPC{}
 	for {
-		if err := t.Decoder.Decode(conn, rpc); err != nil {
-			fmt.Printf("TCP error: %s", err)
+		if err := t.Decoder.Decode(conn, &rpc); err != nil {
 			continue
 		}
 		rpc.From = conn.RemoteAddr()
-		fmt.Printf("message %+v\n", rpc)
+		t.rpcch <- rpc
 	}
 }
