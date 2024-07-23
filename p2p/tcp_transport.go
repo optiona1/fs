@@ -1,7 +1,9 @@
 package p2p
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net"
 )
 
@@ -21,6 +23,20 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 		conn:     conn,
 		outbound: outbound,
 	}
+}
+
+func (p *TCPPeer) Send(b []byte) error {
+	_, err := p.conn.Write(b)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemoteAddr implements the Peer interface and will return the
+// remote address its underlying connection of connection.
+func (t *TCPPeer) RemoteAddr() net.Addr {
+	return t.conn.RemoteAddr()
 }
 
 // Close implements the Peer interface.
@@ -57,6 +73,23 @@ func (t *TCPTransport) Consume() <-chan RPC {
 	return t.rpcch
 }
 
+// Close implements the Transport interface.
+func (t *TCPTransport) Close() error {
+	return t.listener.Close()
+}
+
+// Dial implements the Transport interface.
+func (t *TCPTransport) Dial(addr string) error {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	go t.handleConn(conn, true)
+
+	return nil
+}
+
 func (t *TCPTransport) ListenAddAccept() error {
 	var err error
 
@@ -69,6 +102,7 @@ func (t *TCPTransport) ListenAddAccept() error {
 	// 监听成功，启用一个新的 goroutine 来处理接受连接的循环
 	go t.startAcceptLoop()
 
+	log.Printf("TCP transport listening on port: %s\n", t.ListenAddr)
 	return nil
 }
 
@@ -77,17 +111,21 @@ func (t *TCPTransport) startAcceptLoop() {
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			fmt.Printf("TCP accept error: %s\n", err)
 		}
 
+		fmt.Printf("new incoming connection %+v\n", conn)
 		// 每当接受到一个新连接时，启动一个新的 goroutine 来处理连接。
-		go t.handleConn(conn)
+		go t.handleConn(conn, false)
 	}
 
 }
 
 // 处理新连接。
-func (t *TCPTransport) handleConn(conn net.Conn) {
+func (t *TCPTransport) handleConn(conn net.Conn, outbound bool) {
 	var err error
 
 	defer func() {
@@ -95,7 +133,7 @@ func (t *TCPTransport) handleConn(conn net.Conn) {
 		conn.Close()
 	}()
 
-	peer := NewTCPPeer(conn, true)
+	peer := NewTCPPeer(conn, outbound)
 
 	if err = t.HandshakeFunc(peer); err != nil {
 		return
